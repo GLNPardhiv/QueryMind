@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+python-dotenv
+sqlalchemy
+pymysql
+networkx
+chromadb
+sentence-transformers
+pyvis
+pydantic
+pymongo
+dnspython
+pymongo
+dnspython

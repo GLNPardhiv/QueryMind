@@ -1,0 +1,16 @@
+.vscode/
+!.vscode/extensions.json
+*.code-workspace
+
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.secret
+credentials.json
+
+__pycache__/
+*.pyc
+
+venv/

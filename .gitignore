@@ -1,0 +1,149 @@
+# =========================================================================
+# 🔑 SENSITIVE DATA & CREDENTIALS
+# =========================================================================
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.cert
+id_rsa
+id_dsa
+secrets.*
+credentials.json
+
+# =========================================================================
+# 💻 OPERATING SYSTEM ARTIFACTS
+# =========================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# =========================================================================
+# 🛠️ EDITORS & IDE CONFIGURATIONS
+# =========================================================================
+# VS Code
+.vscode/*
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.history/
+*.code-workspace
+
+# JetBrains (IntelliJ, PyCharm, WebStorm, etc.)
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# Visual Studio / Rider
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.vs/
+
+# Sublime Text / Vim
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# =========================================================================
+# 📦 DEPENDENCIES & PACKAGE MANAGERS
+# =========================================================================
+# JavaScript / Node.js
+node_modules/
+jspm_packages/
+.pnp
+.pnp.js
+
+# Python
+venv/
+.venv/
+env/
+.env/
+ENV/
+pyvenv.cfg
+.pytest_cache/
+.tox/
+.poetry/
+
+# PHP / Ruby / Java
+vendor/
+.bundle/
+*.gem
+.gradle/
+build/
+.mtj.tmp/
+
+# =========================================================================
+# 🚀 BUILD OUTPUTS & COMPILED CODE
+# =========================================================================
+# General Builds
+dist/
+build/
+out/
+target/
+bin/
+obj/
+
+# Language-specific Compiled Files
+*.exe
+*.dll
+*.so
+*.dylib
+*.class
+*.pyc
+*.pyo
+__pycache__/
+
+# Frontend Frameworks (Next.js, Nuxt, Remix, Gatsby)
+.next/
+.nuxt/
+.out/
+.cache/
+.docusaurus/
+.turbo/
+
+# =========================================================================
+# 📊 LOGS, DIAGNOSTICS & CACHES
+# =========================================================================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.eslintcache
+.stylelintcache
+.prettiercache
+.sass-cache
+.parcel-cache
+
+# =========================================================================
+# 🤖 AI & VECTOR DATABASES
+# =========================================================================
+chroma_data/
