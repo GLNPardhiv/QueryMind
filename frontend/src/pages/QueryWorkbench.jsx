@@ -614,7 +614,7 @@ export default function QueryWorkbench() {
                             </div>
 
                             {/* Chart View if numbers present */}
-                            {chartConfig && (
+                            {/* {chartConfig && (
                               <div className="mt-3 p-4 rounded-xl border border-white/[0.08] bg-[#000000] h-56">
                                 <div className="text-xs text-neutral-400 mb-2 font-mono flex items-center justify-between">
                                   <span>Visualized: <strong className="text-white">{chartConfig.originalKey}</strong></span>
@@ -632,7 +632,7 @@ export default function QueryWorkbench() {
                                   </BarChart>
                                 </ResponsiveContainer>
                               </div>
-                            )}
+                            )} */}
 
                           </div>
                         )}

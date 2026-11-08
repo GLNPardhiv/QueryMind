@@ -52,7 +52,7 @@ class MongoService:
 
         self.db = self.client[config.MONGO_DB_NAME]
         self._setup_indexes()
-        print(f"[MongoDB STRICT] Successfully verified connection to MongoDB Atlas database: '{config.MONGO_DB_NAME}'")
+        print(f"[MongoDB] Successfully verified connection to MongoDB Atlas database: '{config.MONGO_DB_NAME}'")
 
     def _setup_indexes(self):
         try:

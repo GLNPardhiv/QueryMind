@@ -20,7 +20,7 @@ async def lifespan(app: FastAPI):
     # Enforce strict MongoDB Atlas connectivity before accepting any incoming requests
     if not mongo_service.is_connected():
         raise RuntimeError("FATAL: MongoDB Atlas connection check failed. Server will not start.")
-    print("[QueryMind] Strict MongoDB Atlas connection verified. Server ready to accept traffic.")
+    print("[QueryMind] MongoDB Atlas connection verified. Server ready to accept traffic.")
     yield
     print("[QueryMind] Server shutting down.")
 
