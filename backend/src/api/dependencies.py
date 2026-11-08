@@ -36,12 +36,16 @@ def get_current_user(
     First user from a company domain becomes ADMIN; subsequent colleagues become STANDARD_USER.
     """
     header_role = request.headers.get("x-user-role")
+    header_user_id = request.headers.get("x-user-id")
+    header_email = request.headers.get("x-user-email")
     
     if not credentials or not credentials.credentials:
-        # Development fallback
+        # Fallback path if token is omitted (respects header user id if provided)
+        resolved_user_id = header_user_id or "local_dev_user"
+        resolved_email = header_email or "developer@querymind.io"
         user_record = mongo_service.get_or_create_user(
-            user_id="local_dev_user",
-            email="developer@querymind.io",
+            user_id=resolved_user_id,
+            email=resolved_email,
             requested_role=header_role or "ADMIN"
         )
         return {
@@ -63,8 +67,8 @@ def get_current_user(
             detail="Authentication token has expired."
         )
 
-    user_id = payload.get("sub", "authenticated_user")
-    email = payload.get("email") or payload.get("primary_email") or payload.get("sub", "user@enterprise.com")
+    user_id = payload.get("sub") or header_user_id or "authenticated_user"
+    email = payload.get("email") or payload.get("primary_email") or header_email or f"{user_id}@enterprise.com"
 
     # Enroll user in enterprise tenant with role check
     user_record = mongo_service.get_or_create_user(

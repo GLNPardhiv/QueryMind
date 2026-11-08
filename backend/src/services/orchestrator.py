@@ -12,12 +12,16 @@ from src.services.ast_service import ast_service
 
 class PipelineOrchestrator:
     def __init__(self):
+        self.database_name: Optional[str] = None
         self.full_schema = schema_extractor.extract_full_schema()
         self.all_table_names = list(self.full_schema.keys())
         
-        # Ensure vectors are built
-        vector_service.ingest_schema(self.full_schema)
-        self.graph_service = SchemaGraphService(self.full_schema)
+        # Ensure vectors and graph are built if schema is available
+        if self.full_schema:
+            vector_service.ingest_schema(self.full_schema)
+            self.graph_service = SchemaGraphService(self.full_schema)
+        else:
+            self.graph_service = SchemaGraphService({})
 
     def process_query(
         self, 
@@ -29,6 +33,11 @@ class PipelineOrchestrator:
         previous_query: Optional[str] = None,
         previous_tables: Optional[List[str]] = None
     ) -> Dict[str, Any]:
+        if not self.full_schema:
+            return {
+                "status": "error",
+                "message": "No database connected. Please connect a database via 'Connect Database' first."
+            }
         try:
             # ── OPTIMIZATION: Cross-Question / Follow-up Path ──
             # Reuses context to strictly avoid spiking API RPM & token limits

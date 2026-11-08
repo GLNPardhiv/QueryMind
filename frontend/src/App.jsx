@@ -264,6 +264,8 @@ const DashboardLayout = ({ children }) => {
         { 
           headers: { 
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            'X-User-Id': user?.id || '',
+            'X-User-Email': user?.primaryEmailAddress?.emailAddress || '',
             'X-User-Role': userRole 
           } 
         }
@@ -543,7 +545,7 @@ const DashboardLayout = ({ children }) => {
 
           {/* Top Right */}
           <div className="flex items-center gap-3">
-            {connectedDb && (
+            {connectedDb ? (
               <div 
                 onClick={() => {
                   if (isAdmin) setIsConnectModalOpen(true);
@@ -558,6 +560,18 @@ const DashboardLayout = ({ children }) => {
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Live
                 </span>
               </div>
+            ) : (
+              <button
+                onClick={() => {
+                  if (isAdmin) setIsConnectModalOpen(true);
+                  else alert("Only Admins can connect external database URIs.");
+                }}
+                className="flex items-center gap-2 bg-[#121215] hover:bg-[#1a1a1e] border border-dashed border-white/[0.2] hover:border-white/[0.4] px-3 py-1.5 rounded-xl text-xs text-neutral-300 hover:text-white transition-all cursor-pointer"
+                title="Connect a Database"
+              >
+                <Plug className="w-3.5 h-3.5 text-neutral-400" />
+                <span>Connect Database</span>
+              </button>
             )}
 
           </div>

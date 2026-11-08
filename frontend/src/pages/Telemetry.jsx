@@ -1,7 +1,8 @@
 // src/pages/Telemetry.jsx
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { useAuth } from '@clerk/clerk-react';
+import { useAuth, useUser } from '@clerk/clerk-react';
+import { useChat } from '../context/ChatContext';
 import { 
   Activity, Zap, Server, ChevronRight, Clock, ShieldCheck, 
   Terminal, RefreshCw, CheckCircle2, AlertCircle, Database, Sparkles,
@@ -10,6 +11,27 @@ import {
 
 export default function Telemetry() {
   const { getToken } = useAuth();
+  const { user } = useUser();
+  const { userRole } = useChat();
+
+  const getHeaders = async () => {
+    try {
+      const token = await getToken();
+      return {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        'X-User-Id': user?.id || '',
+        'X-User-Email': user?.primaryEmailAddress?.emailAddress || '',
+        'X-User-Role': userRole || 'STANDARD_USER'
+      };
+    } catch {
+      return {
+        'X-User-Id': user?.id || '',
+        'X-User-Email': user?.primaryEmailAddress?.emailAddress || '',
+        'X-User-Role': userRole || 'STANDARD_USER'
+      };
+    }
+  };
+
   const [telemetry, setTelemetry] = useState({
     total_queries: 0,
     avg_latency_ms: 18.4,
@@ -41,10 +63,8 @@ export default function Telemetry() {
   const fetchTelemetry = async () => {
     setLoading(true);
     try {
-      const token = await getToken();
-      const res = await axios.get('http://127.0.0.1:8000/api/v1/telemetry', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const headers = await getHeaders();
+      const res = await axios.get('http://127.0.0.1:8000/api/v1/telemetry', { headers });
       if (res.data) {
         setTelemetry(res.data);
         // Select first query for preview without executing any plan automatically
@@ -90,10 +110,10 @@ export default function Telemetry() {
     setExplainLoading(true);
     setExplainError(null);
     try {
-      const token = await getToken();
+      const headers = await getHeaders();
       const res = await axios.post('http://127.0.0.1:8000/api/v1/explain-sql', 
         { sql: sqlToExplain, mode },
-        { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+        { headers }
       );
       if (res.data?.status === 'success') {
         setExplainPlan(res.data);
@@ -114,10 +134,8 @@ export default function Telemetry() {
 
     setDeletingId(itemId);
     try {
-      const token = await getToken();
-      await axios.delete(`http://127.0.0.1:8000/api/v1/telemetry/${itemId}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const headers = await getHeaders();
+      await axios.delete(`http://127.0.0.1:8000/api/v1/telemetry/${itemId}`, { headers });
 
       // Update local state immediately
       setTelemetry(prev => {
@@ -147,10 +165,8 @@ export default function Telemetry() {
       return;
     }
     try {
-      const token = await getToken();
-      await axios.delete('http://127.0.0.1:8000/api/v1/telemetry', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const headers = await getHeaders();
+      await axios.delete('http://127.0.0.1:8000/api/v1/telemetry', { headers });
       setTelemetry({
         total_queries: 0,
         avg_latency_ms: 0,

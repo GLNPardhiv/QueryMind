@@ -10,7 +10,7 @@ class SQLGeneratorService:
     def __init__(self):
         # Initialize the official Google GenAI client using your API key
         self.client = genai.Client(api_key=config.LLM_API_KEY)
-        self.model_candidates = ["gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-1.5-flash"]
+        self.model_candidates = ["gemini-flash-lite-latest", "gemini-flash-latest"]
 
     def _format_schema(self, schema_subset: Dict[str, TableMetadata]) -> str:
         formatted = []

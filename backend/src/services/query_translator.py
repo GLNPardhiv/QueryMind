@@ -7,7 +7,7 @@ from src.core.config import config
 class QueryTranslator:
     def __init__(self):
         self.client = genai.Client(api_key=config.LLM_API_KEY)
-        self.model_candidates = ["gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-1.5-flash"]
+        self.model_candidates = ["gemini-3.5-flash-lite"]
 
     def expand_query(self, user_query: str, table_names: List[str]) -> str:
         """
