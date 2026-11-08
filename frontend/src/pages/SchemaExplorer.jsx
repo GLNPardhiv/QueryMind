@@ -6,7 +6,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import axios from 'axios';
-import { useAuth } from '@clerk/clerk-react';
+import { useAuth, useUser } from '@clerk/clerk-react';
 import { 
   Database, CheckCircle2, Search, Table2, Key, RefreshCw,
   Layers, Upload, FileCode, Check, Eye, ChevronDown,
@@ -98,12 +98,15 @@ function SchemaGraphInner({ nodes, edges, onNodeClick, fitViewTrigger }) {
       theme="dark"
       minZoom={0.2}
       maxZoom={1.8}
+      onlyRenderVisibleElements={true}
     >
       <Background color="#1f1f23" gap={20} size={1} />
       <Controls className="!bg-[#0e0e11] !fill-white !border !border-white/10 !rounded-xl overflow-hidden" />
       <MiniMap 
         nodeColor={() => '#ffffff'} 
         maskColor="rgba(0, 0, 0, 0.85)"
+        zoomable={false}
+        pannable={false}
         className="!bg-[#09090b] !border !border-white/10 !rounded-xl hidden sm:block" 
       />
     </ReactFlow>
@@ -112,8 +115,27 @@ function SchemaGraphInner({ nodes, edges, onNodeClick, fitViewTrigger }) {
 
 export default function SchemaExplorer() {
   const { getToken } = useAuth();
-  const { setIsConnectModalOpen, connectedDb, setConnectedDb } = useChat();
+  const { user } = useUser();
+  const { setIsConnectModalOpen, connectedDb, setConnectedDb, userRole } = useChat();
   const fileInputRef = useRef(null);
+
+  const getHeaders = async () => {
+    try {
+      const token = await getToken();
+      return {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        'X-User-Id': user?.id || '',
+        'X-User-Email': user?.primaryEmailAddress?.emailAddress || '',
+        'X-User-Role': userRole || 'STANDARD_USER'
+      };
+    } catch {
+      return {
+        'X-User-Id': user?.id || '',
+        'X-User-Email': user?.primaryEmailAddress?.emailAddress || '',
+        'X-User-Role': userRole || 'STANDARD_USER'
+      };
+    }
+  };
 
   const [schemaData, setSchemaData] = useState(() => connectedDb?.schema || {});
   const [loading, setLoading] = useState(false);
@@ -121,6 +143,7 @@ export default function SchemaExplorer() {
   const [selectedTable, setSelectedTable] = useState(null);
   const [uploadedSqlName, setUploadedSqlName] = useState(null);
   const [fitViewCounter, setFitViewCounter] = useState(0);
+  const isExplicitlyDisconnected = useRef(false);
 
   // Dropdown menu state
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -145,15 +168,29 @@ export default function SchemaExplorer() {
   const fetchSchema = async () => {
     setLoading(true);
     try {
-      const token = await getToken();
-      const res = await axios.get('http://127.0.0.1:8000/api/v1/schema', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const headers = await getHeaders();
+      const res = await axios.get('http://127.0.0.1:8000/api/v1/schema', { headers });
       if (res.data?.schema && Object.keys(res.data.schema).length > 0) {
         setSchemaData(res.data.schema);
+        if (res.data?.database && !connectedDb) {
+          const rowsCount = res.data.rows_loaded || 0;
+          setConnectedDb({ 
+            id: 'connected-db', 
+            name: res.data.database, 
+            schema: res.data.schema,
+            tableCount: res.data.table_count || Object.keys(res.data.schema).length,
+            rowsCount: rowsCount
+          });
+        }
         const firstTable = Object.keys(res.data.schema)[0];
         if (firstTable) setSelectedTable(firstTable);
         setFitViewCounter(c => c + 1);
+      } else {
+        // Only reset if connectedDb doesn't have an active local/imported schema
+        if (!connectedDb?.schema || Object.keys(connectedDb.schema).length === 0) {
+          setSchemaData({});
+          setSelectedTable(null);
+        }
       }
     } catch (err) {
       console.warn("Error fetching real schema:", err);
@@ -162,13 +199,35 @@ export default function SchemaExplorer() {
     }
   };
 
+  const handleDisconnect = async () => {
+    isExplicitlyDisconnected.current = true;
+    setIsDropdownOpen(false);
+    try {
+      const headers = await getHeaders();
+      await axios.post('http://127.0.0.1:8000/api/v1/disconnect-db', {}, { headers });
+    } catch (e) {
+      console.warn("Disconnect notice:", e);
+    }
+    setConnectedDb(null);
+    setSchemaData({});
+    setSelectedTable(null);
+    setUploadedSqlName(null);
+    window.dispatchEvent(new CustomEvent('schema-updated', { detail: {} }));
+  };
+
   useEffect(() => {
     if (connectedDb?.schema && Object.keys(connectedDb.schema).length > 0) {
+      isExplicitlyDisconnected.current = false;
       setSchemaData(connectedDb.schema);
       if (!selectedTable) setSelectedTable(Object.keys(connectedDb.schema)[0]);
       setFitViewCounter(c => c + 1);
     } else {
-      fetchSchema();
+      if (isExplicitlyDisconnected.current) {
+        setSchemaData({});
+        setSelectedTable(null);
+      } else {
+        fetchSchema();
+      }
     }
   }, [connectedDb]);
 
@@ -176,64 +235,203 @@ export default function SchemaExplorer() {
   useEffect(() => {
     const onSchemaUpdated = (e) => {
       if (e.detail && Object.keys(e.detail).length > 0) {
+        isExplicitlyDisconnected.current = false;
         setSchemaData(e.detail);
         setSelectedTable(Object.keys(e.detail)[0]);
         setFitViewCounter(c => c + 1);
+      } else {
+        setSchemaData({});
+        setSelectedTable(null);
       }
     };
     window.addEventListener('schema-updated', onSchemaUpdated);
     return () => window.removeEventListener('schema-updated', onSchemaUpdated);
   }, []);
 
-  // Parse SQL DDL to extract tables & columns
+  // Fast client-side filter to strip non-DDL/data statements (LOCK, UNLOCK, comments)
+  // while preserving CREATE TABLE, ALTER TABLE, and all INSERT INTO data rows
+  const extractDdlOnlyClient = (sqlText) => {
+    if (!sqlText || sqlText.length < 50000) return sqlText;
+    const lines = sqlText.split('\n');
+    const filtered = [];
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (!trimmed) continue;
+      const lower = trimmed.toLowerCase();
+      // Skip pure comments and unsupported lock/session directives
+      if (lower.startsWith('--') || lower.startsWith('#') || (lower.startsWith('/*') && lower.endsWith('*/;'))) continue;
+      if (lower.startsWith('lock tables') || lower.startsWith('unlock tables')) continue;
+      filtered.push(lines[i]);
+    }
+    return filtered.length > 0 ? filtered.join('\n') : sqlText;
+  };
+
+  // Robust client-side fallback parser for SQL DDL
   const parseDdlString = (sqlContent, sourceName = 'Imported DDL') => {
-    const tableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?([a-zA-Z0-9_]+)`?\s*\(([\s\S]*?)\);/gi;
-    const newSchema = { ...schemaData };
+    // Strip comments from lightweight DDL
+    const cleanDdl = extractDdlOnlyClient(sqlContent);
+    let cleaned = cleanDdl.replace(/\/\*[\s\S]*?\*\//g, '');
+    cleaned = cleaned.replace(/--.*/g, '');
+
+    // Regex matches CREATE TABLE with optional schema name and trailing options (ENGINE, etc.)
+    const tableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[`"\[]?\w+[`"\]]?\.)?[`"\[]?(\w+)[`"\]]?\s*\(([\s\S]*?)\)(?:\s*[^;]*)?;/gi;
+    const newSchema = {};
     let foundCount = 0;
 
+    const splitBodyColumns = (bodyStr) => {
+      const parts = [];
+      let curr = '';
+      let depth = 0;
+      for (let i = 0; i < bodyStr.length; i++) {
+        const char = bodyStr[i];
+        if (char === '(') depth++;
+        else if (char === ')') depth--;
+        if (char === ',' && depth === 0) {
+          parts.push(curr.trim());
+          curr = '';
+        } else {
+          curr += char;
+        }
+      }
+      if (curr.trim()) parts.push(curr.trim());
+      return parts;
+    };
+
     let match;
-    while ((match = tableRegex.exec(sqlContent)) !== null) {
+    while ((match = tableRegex.exec(cleaned)) !== null) {
       const tableName = match[1].toLowerCase();
       const body = match[2];
-      
-      const lines = body.split(',').map(l => l.trim()).filter(Boolean);
+      const lines = splitBodyColumns(body);
       const cols = [];
       const pks = [];
+      const fks = [];
 
       lines.forEach(line => {
-        if (/^PRIMARY\s+KEY/i.test(line)) {
-          const pkMatch = line.match(/\((.*?)\)/);
+        const lineTrim = line.trim();
+        if (!lineTrim) return;
+
+        if (/^(?:CONSTRAINT\s+[`"\[]?\w+[`"\]]?\s+)?PRIMARY\s+KEY/i.test(lineTrim)) {
+          const pkMatch = lineTrim.match(/\((.*?)\)/);
           if (pkMatch) {
-            pks.push(...pkMatch[1].replace(/[`\s]/g, '').split(','));
+            pks.push(...pkMatch[1].replace(/[`"\[\]\s]/g, '').split(',').map(s => s.toLowerCase()));
           }
-        } else if (!/^(CONSTRAINT|KEY|FOREIGN)/i.test(line)) {
-          const parts = line.split(/\s+/);
-          if (parts.length >= 2) {
-            cols.push({
-              name: parts[0].replace(/[`"]/g, ''),
-              type: parts[1].replace(/[,;]/g, '')
+        } else if (/^(?:CONSTRAINT\s+[`"\[]?\w+[`"\]]?\s+)?FOREIGN\s+KEY/i.test(lineTrim)) {
+          const fkMatch = lineTrim.match(/FOREIGN\s+KEY\s*\((.*?)\)\s*REFERENCES\s+(?:[`"\[]?\w+[`"\]]?\.)?[`"\[]?(\w+)[`"\]]?\s*(?:\((.*?)\))?/i);
+          if (fkMatch) {
+            const constrained = fkMatch[1].replace(/[`"\[\]\s]/g, '').split(',').map(s => s.toLowerCase());
+            const refTable = fkMatch[2].toLowerCase();
+            const refCols = fkMatch[3] ? fkMatch[3].replace(/[`"\[\]\s]/g, '').split(',').map(s => s.toLowerCase()) : [];
+            fks.push({
+              constrained_columns: constrained,
+              referred_table: refTable,
+              referred_columns: refCols
             });
+          }
+        } else if (!/^(?:KEY|INDEX|UNIQUE|CHECK)/i.test(lineTrim)) {
+          const parts = lineTrim.split(/\s+/);
+          if (parts.length >= 2) {
+            const cName = parts[0].replace(/[`"\[\],;]/g, '').toLowerCase();
+            const cType = parts[1].replace(/[,;]/g, '').toUpperCase();
+            if (cName) {
+              cols.push({ name: cName, type: cType });
+              if (/PRIMARY\s+KEY/i.test(lineTrim)) {
+                pks.push(cName);
+              }
+            }
           }
         }
       });
 
-      newSchema[tableName] = {
-        columns: cols.length > 0 ? cols : [{ name: "id", type: "INT" }, { name: "name", type: "VARCHAR(100)" }],
-        primary_keys: pks.length > 0 ? pks : ["id"],
-        foreign_keys: []
-      };
-      foundCount++;
+      if (cols.length > 0) {
+        newSchema[tableName] = {
+          columns: cols,
+          primary_keys: pks.length > 0 ? pks : (cols[0] ? [cols[0].name] : []),
+          foreign_keys: fks
+        };
+        foundCount++;
+      }
+    }
+
+    // Regex support for ALTER TABLE ... ADD CONSTRAINT FOREIGN KEY
+    const alterRegex = /ALTER\s+TABLE\s+(?:[`"\[]?\w+[`"\]]?\.)?[`"\[]?(\w+)[`"\]]?\s+ADD\s+(?:CONSTRAINT\s+[`"\[]?\w+[`"\]]?\s+)?FOREIGN\s+KEY\s*\((.*?)\)\s*REFERENCES\s+(?:[`"\[]?\w+[`"\]]?\.)?[`"\[]?(\w+)[`"\]]?\s*(?:\((.*?)\))?/gi;
+    let alterMatch;
+    while ((alterMatch = alterRegex.exec(cleaned)) !== null) {
+      const tbl = alterMatch[1].toLowerCase();
+      const constrained = alterMatch[2].replace(/[`"\[\]\s]/g, '').split(',').map(s => s.toLowerCase());
+      const refTbl = alterMatch[3].toLowerCase();
+      const refCols = alterMatch[4] ? alterMatch[4].replace(/[`"\[\]\s]/g, '').split(',').map(s => s.toLowerCase()) : [];
+      if (newSchema[tbl]) {
+        newSchema[tbl].foreign_keys.push({
+          constrained_columns: constrained,
+          referred_table: refTbl,
+          referred_columns: refCols
+        });
+      }
     }
 
     if (foundCount > 0) {
+      isExplicitlyDisconnected.current = false;
       setSchemaData(newSchema);
       setUploadedSqlName(`${sourceName} (${foundCount} tables)`);
-      setConnectedDb({ id: 'imported_schema', name: sourceName });
-      const firstAdded = Object.keys(newSchema).pop();
+      setConnectedDb({
+        id: 'imported_schema',
+        name: sourceName,
+        tableCount: foundCount,
+        schema: newSchema
+      });
+      const firstAdded = Object.keys(newSchema)[0];
       if (firstAdded) setSelectedTable(firstAdded);
+      setFitViewCounter(c => c + 1);
+      window.dispatchEvent(new CustomEvent('schema-updated', { detail: newSchema }));
     } else {
-      alert("No CREATE TABLE statements found in the provided SQL.");
+      alert("No CREATE TABLE statements found in the provided SQL. Please check the file format.");
     }
+  };
+
+  // Main import handler: Calls backend /import-ddl, with client-side fallback
+  const handleImportDdl = async (sqlContent, sourceName = 'Imported DDL') => {
+    isExplicitlyDisconnected.current = false;
+    setLoading(true);
+    const cleanDdl = extractDdlOnlyClient(sqlContent);
+    try {
+      const headers = await getHeaders();
+      const res = await axios.post('http://127.0.0.1:8000/api/v1/import-ddl', 
+        { ddl: cleanDdl, alias: sourceName },
+        { headers }
+      );
+
+      if (res.data?.schema && Object.keys(res.data.schema).length > 0) {
+        const schema = res.data.schema;
+        const count = res.data.table_count || Object.keys(schema).length;
+        const rowsCount = res.data.rows_loaded || 0;
+        const displayName = rowsCount > 0 
+          ? `${sourceName} (${count} tables, ${rowsCount.toLocaleString()} rows)` 
+          : `${sourceName} (${count} tables)`;
+
+        setSchemaData(schema);
+        setUploadedSqlName(displayName);
+        setConnectedDb({
+          id: 'imported_schema',
+          name: displayName,
+          tableCount: count,
+          rowsCount: rowsCount,
+          schema: schema
+        });
+        const firstTable = Object.keys(schema)[0];
+        if (firstTable) setSelectedTable(firstTable);
+        setFitViewCounter(c => c + 1);
+        window.dispatchEvent(new CustomEvent('schema-updated', { detail: schema }));
+        setLoading(false);
+        return;
+      }
+    } catch (err) {
+      console.warn("Backend /import-ddl error, attempting client-side fallback:", err?.response?.data || err.message);
+    } finally {
+      setLoading(false);
+    }
+
+    // Client-side fallback if backend request fails
+    parseDdlString(sqlContent, sourceName);
   };
 
   // Handle uploaded DDL / SQL file
@@ -243,7 +441,7 @@ export default function SchemaExplorer() {
 
     const reader = new FileReader();
     reader.onload = (event) => {
-      parseDdlString(event.target.result, file.name);
+      handleImportDdl(event.target.result, file.name);
     };
     reader.readAsText(file);
     e.target.value = '';
@@ -254,7 +452,7 @@ export default function SchemaExplorer() {
   const handlePasteDdlSubmit = (e) => {
     e.preventDefault();
     if (!pastedDdlText.trim()) return;
-    parseDdlString(pastedDdlText, 'Pasted DDL');
+    handleImportDdl(pastedDdlText, 'Pasted DDL');
     setPastedDdlText('');
     setIsPasteDdlOpen(false);
   };
@@ -296,19 +494,23 @@ export default function SchemaExplorer() {
       };
     });
 
-    // Foreign key edges
+    // Foreign key edges - only animate and highlight relationships connected to selected node
     const graphEdges = [];
     displayNames.forEach(tbl => {
       const meta = schemaData[tbl];
       if (meta?.foreign_keys) {
         meta.foreign_keys.forEach((fk, fkIdx) => {
           if (displayNames.includes(fk.referred_table)) {
+            const isConnected = selectedTable && (tbl === selectedTable || fk.referred_table === selectedTable);
             graphEdges.push({
               id: `edge-${tbl}-${fk.referred_table}-${fkIdx}`,
               source: tbl,
               target: fk.referred_table,
-              animated: true,
-              style: { stroke: '#52525b', strokeWidth: 1.5, opacity: 0.8 }
+              type: 'smoothstep',
+              animated: isConnected,
+              style: isConnected
+                ? { stroke: '#ffffff', strokeWidth: 2, opacity: 1 }
+                : { stroke: '#3f3f46', strokeWidth: 1, opacity: 0.4 }
             });
           }
         });
@@ -335,11 +537,17 @@ export default function SchemaExplorer() {
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-white text-sm">
-                  {connectedDb?.name || "AdventureWorks DB"}
+                  {connectedDb?.name || "No Database Connected"}
                 </span>
-                <span className="flex items-center gap-1 text-[11px] font-mono text-white bg-white/[0.08] border border-white/[0.12] px-2 py-0.5 rounded-full">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Live
-                </span>
+                {connectedDb ? (
+                  <span className="flex items-center gap-1 text-[11px] font-mono text-white bg-white/[0.08] border border-white/[0.12] px-2 py-0.5 rounded-full">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Live
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1 text-[11px] font-mono text-neutral-400 bg-white/[0.04] border border-white/[0.08] px-2 py-0.5 rounded-full">
+                    <span className="w-1.5 h-1.5 rounded-full bg-neutral-500" /> Disconnected
+                  </span>
+                )}
                 <span className="text-[11px] font-mono text-white bg-white/[0.06] border border-white/[0.08] px-2 py-0.5 rounded-full font-medium">
                   {Object.keys(schemaData).length} Tables
                 </span>
@@ -400,20 +608,6 @@ export default function SchemaExplorer() {
                 <button
                   onClick={() => {
                     setIsDropdownOpen(false);
-                    setConnectedDb({ id: 'adventureworks', name: 'AdventureWorks' });
-                  }}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-neutral-200 hover:text-white hover:bg-white/[0.06] transition-all text-left cursor-pointer"
-                >
-                  <Database className="w-4 h-4 text-white" />
-                  <div>
-                    <div className="font-medium text-white">Use AdventureWorks DB</div>
-                    <div className="text-[10px] text-neutral-400">Set as current active database</div>
-                  </div>
-                </button>
-
-                <button
-                  onClick={() => {
-                    setIsDropdownOpen(false);
                     setIsConnectModalOpen(true);
                   }}
                   className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-neutral-200 hover:text-white hover:bg-white/[0.06] transition-all text-left cursor-pointer"
@@ -468,6 +662,19 @@ export default function SchemaExplorer() {
                     <div className="text-[10px] text-neutral-400">Sync with active database</div>
                   </div>
                 </button>
+
+                {connectedDb && (
+                  <button
+                    onClick={handleDisconnect}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 transition-all text-left cursor-pointer"
+                  >
+                    <X className="w-4 h-4 text-rose-400" />
+                    <div>
+                      <div className="font-medium">Disconnect Database</div>
+                      <div className="text-[10px] text-rose-400/70">Unload active connection</div>
+                    </div>
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -509,14 +716,35 @@ export default function SchemaExplorer() {
           </div>
 
           <div className="flex-1 w-full h-full relative min-h-0">
-            <ReactFlowProvider>
-              <SchemaGraphInner 
-                nodes={nodes} 
-                edges={edges} 
-                onNodeClick={(_, node) => setSelectedTable(node.id)}
-                fitViewTrigger={fitViewCounter}
-              />
-            </ReactFlowProvider>
+            {nodes.length > 0 ? (
+              <ReactFlowProvider>
+                <SchemaGraphInner 
+                  nodes={nodes} 
+                  edges={edges} 
+                  onNodeClick={(_, node) => setSelectedTable(node.id)}
+                  fitViewTrigger={fitViewCounter}
+                />
+              </ReactFlowProvider>
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full text-center p-6 space-y-3">
+                <div className="w-12 h-12 rounded-2xl bg-white/[0.05] border border-white/10 flex items-center justify-center text-neutral-400">
+                  <Database className="w-6 h-6 text-neutral-300" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-white">No Database Connected</h3>
+                  <p className="text-xs text-neutral-400 max-w-sm mt-1">
+                    Connect an external database URI, import a .sql DDL file, or paste table definitions to explore your schema graph.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setIsConnectModalOpen(true)}
+                  className="flex items-center gap-2 bg-white text-black hover:bg-neutral-200 px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer mt-1"
+                >
+                  <Plug className="w-3.5 h-3.5" />
+                  <span>Connect Database URI</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
 

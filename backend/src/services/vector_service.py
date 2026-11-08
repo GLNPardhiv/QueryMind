@@ -1,8 +1,9 @@
 # src/services/vector_service.py
 import os
 import re
+import threading
 import chromadb
-from typing import Dict, List
+from typing import Dict, List, Any
 from sqlalchemy import create_engine, text
 from rank_bm25 import BM25Okapi
 
@@ -18,7 +19,7 @@ class VectorService:
     def __init__(self, persist_dir: str = "./chroma_data"):
         os.makedirs(persist_dir, exist_ok=True)
         self.client = chromadb.PersistentClient(path=persist_dir)
-        self.engine = create_engine(config.DATABASE_URI)
+        self.engine = create_engine(config.DATABASE_URI) if config.DATABASE_URI else None
         
         # IN-MEMORY REGISTRY INITIALIZED HERE
         self.schema_registry: Dict[str, TableMetadata] = {}
@@ -39,6 +40,8 @@ class VectorService:
         self.bm25 = BM25Okapi([tokenize(doc) for doc in documents])
 
     def _get_distinct_samples(self, table_name: str, column_name: str, limit: int = 3) -> List[str]:
+        if not self.engine:
+            return []
         try:
             with self.engine.connect() as conn:
                 query = text(f"SELECT DISTINCT `{column_name}` FROM `{table_name}` WHERE `{column_name}` IS NOT NULL LIMIT {limit}")
@@ -47,19 +50,36 @@ class VectorService:
         except Exception:
             return []
 
-    def ingest_schema(self, schema_data: Dict[str, TableMetadata]):
+    def ingest_schema(self, schema_data: Dict[str, TableMetadata], reset: bool = False):
         # POPULATE THE REGISTRY HERE
         self.schema_registry = schema_data
         
-        # Fast path: If already indexed in ChromaDB, build BM25 instantly from stored documents
-        try:
-            if self.column_collection.count() > 0:
-                stored = self.column_collection.get(include=["documents", "metadatas"])
-                if stored and stored.get("documents"):
-                    self._build_bm25(stored["documents"], stored["metadatas"])
-                    return
-        except Exception as e:
-            print(f"[VectorService Cache Notice] Re-ingesting schema: {e}")
+        if not schema_data:
+            self.bm25 = None
+            self.bm25_documents = []
+            self.bm25_metadatas = []
+            return
+
+        if reset:
+            try:
+                self.client.delete_collection("schema_columns")
+            except Exception:
+                pass
+            embed_fn = embedding_service.get_embedding_function()
+            self.column_collection = self.client.get_or_create_collection(
+                name="schema_columns",
+                embedding_function=embed_fn
+            )
+        else:
+            # Fast path: If already indexed in ChromaDB, build BM25 instantly from stored documents
+            try:
+                if self.column_collection.count() > 0:
+                    stored = self.column_collection.get(include=["documents", "metadatas"])
+                    if stored and stored.get("documents"):
+                        self._build_bm25(stored["documents"], stored["metadatas"])
+                        return
+            except Exception as e:
+                print(f"[VectorService Cache Notice] Re-ingesting schema: {e}")
 
         ids, documents, metadatas = [], [], []
 
@@ -67,30 +87,40 @@ class VectorService:
             clean_table = table_name.lower()
             for col in meta.columns:
                 col_name = col.name.lower()
-                samples = []
-                if any(t in col.type.lower() for t in ["varchar", "char", "text"]):
-                    samples = self._get_distinct_samples(table_name, col.name)
-
                 doc_string = f"Table: {clean_table} | Column: {col_name} ({col.type})"
-                if samples: doc_string += f" | Sample Values: {', '.join(samples)}"
-
                 ids.append(f"{clean_table}.{col_name}")
                 documents.append(doc_string)
                 metadatas.append({"table_name": clean_table, "column_name": col_name})
 
         if ids:
-            self.column_collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
             self._build_bm25(documents, metadatas)
+            # Run heavy dense embedding generation in a background thread so the HTTP response returns instantly
+            threading.Thread(
+                target=self._async_chroma_upsert,
+                args=(ids, documents, metadatas),
+                daemon=True
+            ).start()
+
+    def _async_chroma_upsert(self, ids: List[str], documents: List[str], metadatas: List[Dict[str, Any]]):
+        try:
+            self.column_collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
+        except Exception as e:
+            print(f"[VectorService Background Upsert Notice] {e}")
 
     def search_schemas(self, enriched_query: str, top_k_tables: int = 8) -> List[str]:
         if not self.bm25: return []
         
         # 1. Dense Semantic Search (Widen the net to 150 COLUMNS)
-        dense_results = self.column_collection.query(
-            query_texts=[enriched_query],
-            n_results=min(150, self.column_collection.count()),
-            include=["metadatas"]
-        )
+        dense_results = {"metadatas": [[]]}
+        try:
+            if self.column_collection and self.column_collection.count() > 0:
+                dense_results = self.column_collection.query(
+                    query_texts=[enriched_query],
+                    n_results=min(150, self.column_collection.count()),
+                    include=["metadatas"]
+                )
+        except Exception:
+            pass
         
         # 2. Sparse BM25 Search (Widen the net to 150 COLUMNS)
         tokenized_query = tokenize(enriched_query)

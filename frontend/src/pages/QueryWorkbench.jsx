@@ -1,7 +1,7 @@
 // src/pages/QueryWorkbench.jsx
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { useAuth } from '@clerk/clerk-react';
+import { useAuth, useUser } from '@clerk/clerk-react';
 import Editor from '@monaco-editor/react';
 import { 
   Play, Sparkles, CheckCircle2, XCircle, Table2, AlertCircle,
@@ -25,11 +25,30 @@ const STARTER_PROMPTS = [
 
 export default function QueryWorkbench() {
   const { getToken } = useAuth();
+  const { user } = useUser();
   const { 
     activeChat, addMessageToActiveChat, activeWorkbenchSql, 
     setActiveWorkbenchSql, workbenchMode, setWorkbenchMode, openInWorkbench,
-    userRole, isAdmin
+    userRole, isAdmin, connectedDb
   } = useChat();
+
+  const getHeaders = async () => {
+    try {
+      const token = await getToken();
+      return {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        'X-User-Id': user?.id || '',
+        'X-User-Email': user?.primaryEmailAddress?.emailAddress || '',
+        'X-User-Role': userRole || 'STANDARD_USER'
+      };
+    } catch {
+      return {
+        'X-User-Id': user?.id || '',
+        'X-User-Email': user?.primaryEmailAddress?.emailAddress || '',
+        'X-User-Role': userRole || 'STANDARD_USER'
+      };
+    }
+  };
 
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -122,14 +141,14 @@ export default function QueryWorkbench() {
       }, fileData.name);
 
       try {
-        const token = await getToken();
+        const headers = await getHeaders();
         const res = await axios.post('http://127.0.0.1:8000/api/v1/upload-sql',
           {
             filename: fileData.name,
             content: fileData.content,
             action: 'inspect' // Just inspect and validate, do not execute directly
           },
-          { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'X-User-Role': userRole } }
+          { headers }
         );
 
         const assistantMsg = {
@@ -183,22 +202,23 @@ export default function QueryWorkbench() {
     }, title);
 
     try {
-      const token = await getToken();
+      const headers = await getHeaders();
       const payload = {
         query: text,
         is_followup: isFollowup,
         previous_sql: isFollowup ? lastAssistantWithSql.sql : null,
         previous_query: isFollowup ? lastUserQueryText : null,
-        context_tables: isFollowup ? (lastAssistantWithSql.tablesUsed || []) : null
+        context_tables: isFollowup ? (lastAssistantWithSql.tablesUsed || []) : null,
+        schema_context: connectedDb?.schema || null,
+        database: connectedDb?.name || null
       };
 
       const res = await axios.post('http://127.0.0.1:8000/api/v1/generate-sql',
         payload,
         { 
           headers: { 
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            'Content-Type': 'application/json',
-            'X-User-Role': userRole
+            ...headers,
+            'Content-Type': 'application/json'
           } 
         }
       );
@@ -237,10 +257,14 @@ export default function QueryWorkbench() {
     if (!sql || executingMsgId) return;
     setExecutingMsgId(msgId);
     try {
-      const token = await getToken();
+      const headers = await getHeaders();
       const res = await axios.post('http://127.0.0.1:8000/api/v1/raw-sql',
-        { sql },
-        { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+        { 
+          sql,
+          schema_context: connectedDb?.schema || null,
+          database: connectedDb?.name || null
+        },
+        { headers }
       );
 
       // Attach execution data to this message
@@ -264,10 +288,14 @@ export default function QueryWorkbench() {
     setRawSqlResult(null);
 
     try {
-      const token = await getToken();
+      const headers = await getHeaders();
       const res = await axios.post('http://127.0.0.1:8000/api/v1/raw-sql',
-        { sql: activeWorkbenchSql },
-        { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+        { 
+          sql: activeWorkbenchSql,
+          schema_context: connectedDb?.schema || null,
+          database: connectedDb?.name || null
+        },
+        { headers }
       );
 
       if (res.data.status === 'blocked') {

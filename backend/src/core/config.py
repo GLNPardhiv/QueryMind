@@ -7,12 +7,12 @@ backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 env_path = os.path.join(backend_dir, ".env")
 
 class Settings(BaseSettings):
-    # Relational Database credentials (e.g. MySQL AdventureWorks)
-    DB_USER: str
-    DB_PASSWORD: str
-    DB_HOST: str
-    DB_PORT: int = 3306
-    DB_NAME: str
+    # Relational Database credentials (Optional - external databases connected dynamically)
+    DB_USER: Optional[str] = None
+    DB_PASSWORD: Optional[str] = None
+    DB_HOST: Optional[str] = None
+    DB_PORT: Optional[int] = 3306
+    DB_NAME: Optional[str] = None
     
     # LLM Settings
     LLM_API_KEY: str
@@ -28,9 +28,11 @@ class Settings(BaseSettings):
     )
 
     @property
-    def DATABASE_URI(self) -> str:
-        """Constructs the SQLAlchemy connection string securely."""
-        encoded_password = quote_plus(self.DB_PASSWORD)
-        return f"mysql+pymysql://{self.DB_USER}:{encoded_password}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+    def DATABASE_URI(self) -> Optional[str]:
+        """Constructs the SQLAlchemy connection string securely if database credentials are provided."""
+        if not self.DB_USER or not self.DB_HOST or not self.DB_NAME:
+            return None
+        encoded_password = quote_plus(self.DB_PASSWORD or "")
+        return f"mysql+pymysql://{self.DB_USER}:{encoded_password}@{self.DB_HOST}:{self.DB_PORT or 3306}/{self.DB_NAME}"
 
 config = Settings()

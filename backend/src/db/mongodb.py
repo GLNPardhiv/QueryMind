@@ -81,21 +81,34 @@ class MongoService:
         - Subsequent users registering from the same domain become 'STANDARD_USER'.
         - Persisted directly to MongoDB Atlas.
         """
-        clean_email = email.lower().strip()
-        domain = clean_email.split('@')[-1] if '@' in clean_email else 'default_org'
+        clean_email = email.lower().strip() if email else f"{user_id}@local.dev"
+        parts = clean_email.split('@')
+        domain = parts[-1] if len(parts) > 1 and parts[-1] else 'personal'
 
-        # Public generic domains treated individually
-        generic_domains = {"gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com"}
-        org_id = f"user_{user_id[:8]}" if domain in generic_domains else domain.replace('.', '_')
+        # Public generic domains or fallback domains get a strictly isolated org_id per user
+        generic_domains = {
+            "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", 
+            "icloud.com", "protonmail.com", "enterprise.com", "default_org", "personal", "local.dev"
+        }
+        if domain in generic_domains or not domain or domain == 'default_org':
+            org_id = f"org_{user_id}"
+        else:
+            org_id = domain.replace('.', '_')
 
-        user = self.db.users.find_one({"$or": [{"user_id": user_id}, {"email": clean_email}]})
+        user = self.db.users.find_one({"user_id": user_id})
+        if not user and clean_email and clean_email != "developer@querymind.io" and not clean_email.endswith("@enterprise.com") and not clean_email.endswith("@local.dev"):
+            user = self.db.users.find_one({"email": clean_email})
+
         if user:
-            self.db.users.update_one({"_id": user["_id"]}, {"$set": {"last_seen": time.time()}})
+            update_fields = {"last_seen": time.time()}
+            if requested_role and requested_role.upper() in ["ADMIN", "STANDARD_USER"]:
+                update_fields["role"] = requested_role.upper()
+            self.db.users.update_one({"_id": user["_id"]}, {"$set": update_fields})
             return {
                 "user_id": user["user_id"],
-                "email": user["email"],
-                "org_id": user["org_id"],
-                "role": user["role"]
+                "email": user.get("email", clean_email),
+                "org_id": user.get("org_id", org_id),
+                "role": update_fields.get("role", user.get("role", "STANDARD_USER"))
             }
 
         # Check if this enterprise domain already has an admin
@@ -220,9 +233,13 @@ class MongoService:
         except Exception as e:
             print(f"[MongoDB Telemetry Log Error] {e}")
 
-    def get_recent_telemetry(self, org_id: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_recent_telemetry(self, org_id: Optional[str] = None, user_id: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
         try:
-            query = {"org_id": org_id} if org_id else {}
+            query = {}
+            if user_id:
+                query["user_id"] = user_id
+            elif org_id:
+                query["org_id"] = org_id
             cursor = self.db.telemetry.find(query).sort("timestamp", DESCENDING).limit(limit)
             items = []
             for doc in cursor:
@@ -233,7 +250,7 @@ class MongoService:
             print(f"[MongoDB Telemetry Fetch Error] {e}")
             return []
 
-    def delete_telemetry_item(self, item_id: str) -> bool:
+    def delete_telemetry_item(self, item_id: str, user_id: Optional[str] = None, org_id: Optional[str] = None) -> bool:
         try:
             from bson import ObjectId
             queries = [{"id": item_id}]
@@ -242,19 +259,58 @@ class MongoService:
                     queries.append({"_id": ObjectId(item_id)})
                 except Exception:
                     pass
-            res = self.db.telemetry.delete_one({"$or": queries})
+            base_query = {"$or": queries}
+            if user_id:
+                base_query["user_id"] = user_id
+            elif org_id:
+                base_query["org_id"] = org_id
+            res = self.db.telemetry.delete_one(base_query)
             return res.deleted_count > 0
         except Exception as e:
             print(f"[MongoDB Delete Telemetry Error] {e}")
             return False
 
-    def clear_telemetry(self, org_id: Optional[str] = None) -> bool:
+    def clear_telemetry(self, org_id: Optional[str] = None, user_id: Optional[str] = None) -> bool:
         try:
-            query = {"org_id": org_id} if org_id else {}
+            query = {}
+            if user_id:
+                query["user_id"] = user_id
+            elif org_id:
+                query["org_id"] = org_id
+            else:
+                return False  # Protect from wiping everything without a scope!
             self.db.telemetry.delete_many(query)
             return True
         except Exception as e:
             print(f"[MongoDB Clear Telemetry Error] {e}")
+            return False
+
+    # ── Tenant Database Connection Persistence ──
+    def save_tenant_db_connection(self, org_id: str, uri: str, alias: Optional[str] = None) -> bool:
+        try:
+            self.db.tenant_connections.update_one(
+                {"org_id": org_id},
+                {"$set": {"org_id": org_id, "uri": uri, "alias": alias or "External Database", "updated_at": time.time()}},
+                upsert=True
+            )
+            return True
+        except Exception as e:
+            print(f"[MongoDB Save Tenant Connection Error] {e}")
+            return False
+
+    def get_tenant_db_connection(self, org_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            return self.db.tenant_connections.find_one({"org_id": org_id})
+        except Exception as e:
+            print(f"[MongoDB Get Tenant Connection Error] {e}")
+            return None
+
+    def delete_tenant_db_connection(self, org_id: str) -> bool:
+        try:
+            self.db.tenant_connections.delete_one({"org_id": org_id})
+            return True
+        except Exception as e:
+            print(f"[MongoDB Delete Tenant Connection Error] {e}")
             return False
 
 mongo_service = MongoService()
